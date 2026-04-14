@@ -7,6 +7,7 @@
 import type { Request, Response } from "express";
 import { v4 as uuidv4 } from "uuid";
 import { ClaudeSubprocess } from "../subprocess/manager.js";
+import type { SubprocessOptions } from "../subprocess/manager.js";
 import { openaiToCli } from "../adapter/openai-to-cli.js";
 import {
   cliResultToOpenai,
@@ -14,6 +15,7 @@ import {
 } from "../adapter/cli-to-openai.js";
 import type { OpenAIChatRequest } from "../types/openai.js";
 import type { ClaudeCliAssistant, ClaudeCliResult, ClaudeCliStreamEvent } from "../types/claude-cli.js";
+import { resolveWorkspace, getContainerPath } from "../config/workspaces.js";
 
 /**
  * Handle POST /v1/chat/completions
@@ -45,10 +47,13 @@ export async function handleChatCompletions(
     const cliInput = openaiToCli(body);
     const subprocess = new ClaudeSubprocess();
 
+    // Build subprocess options with workspace-aware tool access
+    const subprocessOpts = buildSubprocessOptions(cliInput);
+
     if (stream) {
-      await handleStreamingResponse(req, res, subprocess, cliInput, requestId);
+      await handleStreamingResponse(req, res, subprocess, cliInput, subprocessOpts, requestId);
     } else {
-      await handleNonStreamingResponse(res, subprocess, cliInput, requestId);
+      await handleNonStreamingResponse(res, subprocess, cliInput, subprocessOpts, requestId);
     }
   } catch (error) {
     const message = error instanceof Error ? error.message : "Unknown error";
@@ -67,6 +72,33 @@ export async function handleChatCompletions(
 }
 
 /**
+ * Build subprocess options with workspace-aware tool access.
+ * When an agent is detected, enables file tools and points them at
+ * the agent's host-accessible workspace directory.
+ */
+function buildSubprocessOptions(cliInput: ReturnType<typeof openaiToCli>): Partial<SubprocessOptions> {
+  const opts: Partial<SubprocessOptions> = {};
+  const workspacePath = resolveWorkspace(cliInput.agentId ?? null);
+
+  if (workspacePath) {
+    const containerPath = getContainerPath(cliInput.agentId!);
+    opts.tools = "Read,Write,Edit,Bash,Glob,Grep";
+    opts.addDirs = [workspacePath];
+    opts.cwd = workspacePath;
+    opts.dangerouslySkipPermissions = true;
+    opts.systemPrompt = [
+      `Your workspace directory is: ${workspacePath}`,
+      `This is the host-accessible equivalent of ${containerPath} inside the Docker container.`,
+      `When reading or writing workspace files, use the path: ${workspacePath}/`,
+      `All file operations should target this directory.`,
+    ].join("\n");
+    console.error(`[routes] Agent "${cliInput.agentId}" → workspace: ${workspacePath}`);
+  }
+
+  return opts;
+}
+
+/**
  * Handle streaming response (SSE)
  *
  * IMPORTANT: The Express req.on("close") event fires when the request body
@@ -78,6 +110,7 @@ async function handleStreamingResponse(
   res: Response,
   subprocess: ClaudeSubprocess,
   cliInput: ReturnType<typeof openaiToCli>,
+  subprocessOpts: Partial<SubprocessOptions>,
   requestId: string
 ): Promise<void> {
   // Set SSE headers
@@ -179,6 +212,7 @@ async function handleStreamingResponse(
     subprocess.start(cliInput.prompt, {
       model: cliInput.model,
       sessionId: cliInput.sessionId,
+      ...subprocessOpts,
     }).catch((err) => {
       console.error("[Streaming] Subprocess start error:", err);
       reject(err);
@@ -193,6 +227,7 @@ async function handleNonStreamingResponse(
   res: Response,
   subprocess: ClaudeSubprocess,
   cliInput: ReturnType<typeof openaiToCli>,
+  subprocessOpts: Partial<SubprocessOptions>,
   requestId: string
 ): Promise<void> {
   return new Promise((resolve) => {
@@ -234,6 +269,7 @@ async function handleNonStreamingResponse(
       .start(cliInput.prompt, {
         model: cliInput.model,
         sessionId: cliInput.sessionId,
+        ...subprocessOpts,
       })
       .catch((error) => {
         res.status(500).json({

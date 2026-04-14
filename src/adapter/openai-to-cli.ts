@@ -3,6 +3,7 @@
  */
 
 import type { OpenAIChatRequest, OpenAIMessageContent } from "../types/openai.js";
+import { extractAgentId } from "../config/workspaces.js";
 
 export type ClaudeModel = "opus" | "sonnet" | "haiku" | string;
 
@@ -10,6 +11,8 @@ export interface CliInput {
   prompt: string;
   model: ClaudeModel;
   sessionId?: string;
+  /** Detected agent ID (e.g. "piper", "nate") */
+  agentId?: string | null;
 }
 
 const MODEL_MAP: Record<string, ClaudeModel> = {
@@ -119,9 +122,15 @@ export function messagesToPrompt(messages: OpenAIChatRequest["messages"]): strin
  * Convert OpenAI chat request to CLI input format
  */
 export function openaiToCli(request: OpenAIChatRequest): CliInput {
+  const agentId = extractAgentId(request.messages, request.user);
+  if (agentId) {
+    console.error(`[openaiToCli] Detected agent: ${agentId}`);
+  }
+
   return {
     prompt: messagesToPrompt(request.messages),
     model: extractModel(request.model),
-    sessionId: request.user, // Use OpenAI's user field for session mapping
+    sessionId: request.user,
+    agentId,
   };
 }

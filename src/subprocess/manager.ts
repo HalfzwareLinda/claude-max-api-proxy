@@ -23,6 +23,14 @@ export interface SubprocessOptions {
   sessionId?: string;
   cwd?: string;
   timeout?: number;
+  /** Comma-separated list of tools to enable (e.g. "Read,Write,Bash") */
+  tools?: string;
+  /** Additional directories to allow tool access to */
+  addDirs?: string[];
+  /** Skip all permission prompts (required for headless tool use) */
+  dangerouslySkipPermissions?: boolean;
+  /** System prompt prepended to the conversation */
+  systemPrompt?: string;
 }
 
 export interface SubprocessEvents {
@@ -141,9 +149,26 @@ export class ClaudeSubprocess extends EventEmitter {
       "--no-session-persistence", // Don't save sessions
     ];
 
-    // Support headless operation without permission prompts
-    if (process.env.CLAUDE_DANGEROUSLY_SKIP_PERMISSIONS === "true") {
+    // Enable specific tools for workspace access
+    if (options.tools) {
+      args.push("--tools", options.tools);
+    }
+
+    // Add directories for tool access (workspace paths)
+    if (options.addDirs) {
+      for (const dir of options.addDirs) {
+        args.push("--add-dir", dir);
+      }
+    }
+
+    // Skip permission prompts (required when tools are enabled headlessly)
+    if (options.dangerouslySkipPermissions || process.env.CLAUDE_DANGEROUSLY_SKIP_PERMISSIONS === "true") {
       args.push("--dangerously-skip-permissions");
+    }
+
+    // Append system prompt for workspace context
+    if (options.systemPrompt) {
+      args.push("--system-prompt", options.systemPrompt);
     }
 
     if (options.sessionId) {
