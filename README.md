@@ -63,6 +63,36 @@ npm install
 npm run build
 ```
 
+## Quick Start
+
+After installing the proxy and configuring the OpenCLAW provider (see [Configuration with OpenCLAW](#configuration-with-openclaw)):
+
+1. **Docker setup** (OpenCLAW in a container, proxy on host):
+   ```bash
+   claude-max-api
+   # Auto-discovers agents from /var/lib/docker/volumes/openclaw-config/_data/openclaw.json
+   # Agents get workspace file access automatically — zero config needed
+   ```
+
+2. **Native setup** (OpenCLAW installed directly on the machine):
+   ```bash
+   claude-max-api
+   # Auto-discovers agents from ~/.openclaw/openclaw.json
+   ```
+
+3. **Custom setup** (auto-discovery doesn't work, or non-standard paths):
+   ```bash
+   cp proxy.config.example.json proxy.config.json
+   # Edit proxy.config.json with your agent IDs and workspace paths
+   claude-max-api
+   ```
+
+The proxy logs which agents it found at startup. Look for:
+```
+[config] Auto-discovered 7 agent(s) from /var/lib/docker/volumes/openclaw-config/_data/openclaw.json
+[workspaces] Workspace access enabled for 7 agent(s): main, james, reese, nate, max, sage, piper
+```
+
 ## Usage
 
 ### Start the server
