@@ -1,0 +1,22 @@
+{
+  "port": 3456,
+  "host": "0.0.0.0",
+  "workspace": {
+    "enabled": true,
+    "tools": "Read,Write,Edit,Bash,Glob,Grep",
+    "agents": [
+      {
+        "id": "main",
+        "name": "Main",
+        "workspace": "/var/lib/docker/volumes/openclaw-workspace/_data",
+        "containerPath": "/home/node/.openclaw/workspace"
+      },
+      {
+        "id": "piper",
+        "name": "Piper",
+        "workspace": "/var/lib/docker/volumes/openclaw-config/_data/workspace-piper",
+        "containerPath": "/home/node/.openclaw/workspace-piper"
+      }
+    ]
+  }
+}

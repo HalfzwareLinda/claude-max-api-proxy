@@ -1,62 +1,88 @@
 /**
  * OpenCLAW Agent Workspace Resolution
  *
- * Maps agent identities to their host-accessible workspace paths.
- * When OpenCLAW runs in Docker, workspace files live in Docker volumes
- * that are accessible on the host at /var/lib/docker/volumes/...
- * When running natively, workspaces are at ~/.openclaw/workspace-{agent}/
+ * Resolves agent identities from incoming requests and maps them
+ * to host-accessible workspace paths. Agent list is loaded from
+ * the config system (auto-discovered from openclaw.json or manual).
  */
 
-// Environment-configurable base path for OpenCLAW workspaces
-// Docker: /var/lib/docker/volumes/openclaw-config/_data
-// Native: ~/.openclaw (or wherever OpenCLAW stores data)
-const VOLUME_BASE = process.env.OPENCLAW_VOLUME_PATH
-  || "/var/lib/docker/volumes/openclaw-config/_data";
+import type { AgentConfig, ProxyConfig } from "./config.js";
 
-// Separate volume for the "main" agent's workspace (Docker only)
-const MAIN_WORKSPACE = process.env.OPENCLAW_MAIN_WORKSPACE_PATH
-  || "/var/lib/docker/volumes/openclaw-workspace/_data";
+let cachedConfig: ProxyConfig | null = null;
 
-// Known agent IDs
-const AGENT_IDS = ["main", "james", "reese", "nate", "max", "sage", "piper"];
+/**
+ * Initialize the workspace module with the loaded config.
+ * Must be called once at startup.
+ */
+export function initWorkspaces(config: ProxyConfig): void {
+  cachedConfig = config;
+  if (config.workspace.enabled) {
+    const agents = config.workspace.agents;
+    console.error(`[workspaces] Workspace access enabled for ${agents.length} agent(s): ${agents.map(a => a.id).join(", ")}`);
+  } else {
+    console.error("[workspaces] Workspace access disabled (no agents configured)");
+  }
+}
 
 /**
  * Resolve an agent ID to its host-accessible workspace path.
- * Returns null if the agent is unknown.
+ * Returns null if the agent is unknown or workspaces are disabled.
  */
 export function resolveWorkspace(agentId: string | null): string | null {
-  if (!agentId) return null;
+  if (!agentId || !cachedConfig?.workspace.enabled) return null;
 
   const id = agentId.toLowerCase().trim();
+  const agent = cachedConfig.workspace.agents.find(
+    a => a.id.toLowerCase() === id
+  );
 
-  if (id === "main" || id === "default") {
-    return MAIN_WORKSPACE;
-  }
+  return agent?.workspace ?? null;
+}
 
-  if (AGENT_IDS.includes(id)) {
-    return `${VOLUME_BASE}/workspace-${id}`;
-  }
+/**
+ * Get the container-equivalent path for an agent.
+ * Used to tell the LLM about path equivalences.
+ */
+export function getContainerPath(agentId: string): string {
+  if (!cachedConfig) return `/home/node/.openclaw/workspace-${agentId}`;
 
-  // Unknown agent — try workspace-{id} anyway (forward-compatible)
-  return `${VOLUME_BASE}/workspace-${id}`;
+  const id = agentId.toLowerCase().trim();
+  const agent = cachedConfig.workspace.agents.find(
+    a => a.id.toLowerCase() === id
+  );
+
+  return agent?.containerPath ?? `/home/node/.openclaw/workspace-${agentId}`;
+}
+
+/**
+ * Get the configured tools string.
+ */
+export function getToolsString(): string {
+  return cachedConfig?.workspace.tools ?? "Read,Write,Edit,Bash,Glob,Grep";
 }
 
 /**
  * Extract agent identity from an OpenAI messages array.
  *
- * OpenCLAW embeds agent identity in the system prompt. We look for patterns like:
- *   - "You are Piper" / "name: Piper" / "identity: Piper"
- *   - Agent ID in the user field
+ * Looks for agent identity in:
+ * 1. The "user" field of the request
+ * 2. System/developer messages (patterns like "You are Piper", "name: Piper")
  */
 export function extractAgentId(
   messages: Array<{ role: string; content: unknown }>,
   user?: string
 ): string | null {
-  // 1. Check the "user" field (OpenCLAW may put agent ID here)
+  if (!cachedConfig?.workspace.enabled) return null;
+
+  const agentIds = cachedConfig.workspace.agents.map(a => a.id.toLowerCase());
+  const agentNames = cachedConfig.workspace.agents.map(a => (a.name || a.id).toLowerCase());
+
+  // 1. Check the "user" field
   if (user) {
     const lower = user.toLowerCase();
-    for (const id of AGENT_IDS) {
-      if (lower === id || lower.includes(id)) return id;
+    for (let i = 0; i < agentIds.length; i++) {
+      if (lower === agentIds[i] || lower.includes(agentIds[i])) return agentIds[i];
+      if (agentNames[i] && (lower === agentNames[i] || lower.includes(agentNames[i]))) return agentIds[i];
     }
   }
 
@@ -75,31 +101,18 @@ export function extractAgentId(
 
     if (!text) continue;
 
-    // Match patterns like "You are Piper", "name: Piper", "identity.name: Piper"
-    for (const id of AGENT_IDS) {
+    // Match patterns like "You are Piper", "name: Piper", "agent: piper"
+    for (let i = 0; i < agentIds.length; i++) {
+      const name = cachedConfig.workspace.agents[i].name || cachedConfig.workspace.agents[i].id;
       const patterns = [
-        new RegExp(`\\bYou are ${id}\\b`, "i"),
-        new RegExp(`\\bname:\\s*["']?${id}["']?`, "i"),
-        new RegExp(`\\bidentity[^:]*:\\s*["']?${id}["']?`, "i"),
-        new RegExp(`\\bagent[^:]*:\\s*["']?${id}["']?`, "i"),
+        new RegExp(`\\bYou are ${name}\\b`, "i"),
+        new RegExp(`\\bname:\\s*["']?${name}["']?`, "i"),
+        new RegExp(`\\bidentity[^:]*:\\s*["']?${name}["']?`, "i"),
+        new RegExp(`\\bagent[^:]*:\\s*["']?${name}["']?`, "i"),
       ];
-      if (patterns.some(p => p.test(text))) return id;
+      if (patterns.some(p => p.test(text))) return agentIds[i];
     }
   }
 
   return null;
 }
-
-/**
- * Get the container-equivalent path for a host workspace path.
- * Used to tell the LLM about path equivalences.
- */
-export function getContainerPath(agentId: string): string {
-  const id = agentId.toLowerCase().trim();
-  if (id === "main" || id === "default") {
-    return "/home/node/.openclaw/workspace";
-  }
-  return `/home/node/.openclaw/workspace-${id}`;
-}
-
-export { VOLUME_BASE, MAIN_WORKSPACE, AGENT_IDS };

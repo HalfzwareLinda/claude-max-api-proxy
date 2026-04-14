@@ -1,0 +1,37 @@
+# systemd user service for claude-max-api-proxy
+#
+# Installation:
+#   1. Copy this file to ~/.config/systemd/user/claude-max-proxy.service
+#   2. Edit the ExecStart path to match your setup (see comments below)
+#   3. Run:
+#        systemctl --user daemon-reload
+#        systemctl --user enable claude-max-proxy
+#        systemctl --user start claude-max-proxy
+#
+# Logs:
+#   journalctl --user -u claude-max-proxy -f
+#
+# NOTE: Adjust all paths marked with <<<EDIT>>> to match your system.
+#       Run these commands to find the correct values:
+#         which node          → Node.js binary path
+#         npm root -g         → Global npm modules path
+
+[Unit]
+Description=Claude Max API Proxy (OpenAI-compatible bridge to Claude CLI)
+After=network.target
+
+[Service]
+# Option A: Use the wrapper script (recommended — binds to 0.0.0.0 for Docker access)
+# ExecStart=/usr/bin/node /home/YOUR_USER/.local/bin/claude-max-proxy-wrapper.mjs    <<<EDIT>>>
+
+# Option B: Use the standalone entry point directly (binds to 127.0.0.1 by default)
+ExecStart=/usr/bin/node /home/YOUR_USER/.npm-global/lib/node_modules/claude-max-api-proxy/dist/server/standalone.js    # <<<EDIT>>>
+
+Restart=on-failure
+RestartSec=5
+Environment=NODE_ENV=production
+# <<<EDIT>>> Adjust these paths to include your npm global bin and local bin directories
+Environment=PATH=/home/YOUR_USER/.npm-global/bin:/home/YOUR_USER/.local/bin:/usr/local/bin:/usr/bin:/bin
+
+[Install]
+WantedBy=default.target

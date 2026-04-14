@@ -15,7 +15,7 @@ import {
 } from "../adapter/cli-to-openai.js";
 import type { OpenAIChatRequest } from "../types/openai.js";
 import type { ClaudeCliAssistant, ClaudeCliResult, ClaudeCliStreamEvent } from "../types/claude-cli.js";
-import { resolveWorkspace, getContainerPath } from "../config/workspaces.js";
+import { resolveWorkspace, getContainerPath, getToolsString } from "../config/workspaces.js";
 
 /**
  * Handle POST /v1/chat/completions
@@ -82,7 +82,7 @@ function buildSubprocessOptions(cliInput: ReturnType<typeof openaiToCli>): Parti
 
   if (workspacePath) {
     const containerPath = getContainerPath(cliInput.agentId!);
-    opts.tools = "Read,Write,Edit,Bash,Glob,Grep";
+    opts.tools = getToolsString();
     opts.addDirs = [workspacePath];
     opts.cwd = workspacePath;
     opts.dangerouslySkipPermissions = true;

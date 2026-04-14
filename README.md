@@ -4,25 +4,17 @@
 
 This provider wraps the Claude Code CLI as a subprocess and exposes an OpenAI-compatible HTTP API, allowing tools like OpenCLAW, Continue.dev, or any OpenAI-compatible client to use your Claude Max subscription instead of paying per-API-call.
 
-> **This is a fork of [`mnemon-dev/claude-max-api-proxy`](https://github.com/mnemon-dev/claude-max-api-proxy)** with fixes for OpenCLAW compatibility. See [What this fork fixes](#what-this-fork-fixes) below. Install from this fork until the [upstream PR](https://github.com/mnemon-dev/claude-max-api-proxy/pull/1) is merged.
+> **This is a fork of [`mnemon-dev/claude-max-api-proxy`](https://github.com/mnemon-dev/claude-max-api-proxy)** with fixes for OpenCLAW compatibility and workspace tool access for agents. Install from this fork until the [upstream PR](https://github.com/mnemon-dev/claude-max-api-proxy/pull/1) is merged.
 
-## What This Fork Fixes
+## What This Fork Adds
 
-The upstream proxy has two issues when used with OpenCLAW:
+On top of the upstream proxy, this fork provides:
 
-1. **Missing `/chat/completions` route** — OpenCLAW's `openai-completions` provider appends `/chat/completions` to the base URL without a `/v1` prefix. The upstream proxy only registers `/v1/chat/completions`, so every request returns 404. This fork registers both paths.
+1. **Missing `/chat/completions` route** — OpenCLAW's `openai-completions` provider omits the `/v1` prefix. This fork registers both `/v1/chat/completions` and `/chat/completions`.
 
-2. **`[object Object]` in messages** — OpenCLAW sends message content as structured arrays (`[{type: "text", text: "..."}]`). The upstream's compiled `dist/` is out of date and doesn't include the `extractContentText()` function that already exists in the TypeScript source. This fork ships a current build.
+2. **Structured message content** — Handles OpenCLAW's array-format message content (`[{type: "text", text: "..."}]`) without corrupting it to `[object Object]`.
 
-## Why This Exists
-
-| Approach | Cost | Limitation |
-|----------|------|------------|
-| Claude API | ~$15/M input, ~$75/M output tokens | Pay per use |
-| Claude Max | $200/month flat | OAuth blocked for third-party API use |
-| **This Proxy** | $0 extra (uses Max subscription) | Routes through CLI |
-
-Anthropic blocks OAuth tokens from being used directly with third-party API clients. However, the Claude Code CLI *can* use OAuth tokens. This proxy bridges that gap by wrapping the CLI and exposing a standard API.
+3. **Workspace file access for agents** — Automatically detects OpenCLAW agent identities and enables Claude CLI tools (Read, Write, Edit, Bash, Glob, Grep) against each agent's workspace directory. Agents running in Docker containers can read and write their workspace files through the proxy.
 
 ## How It Works
 
@@ -33,7 +25,7 @@ Your App (OpenCLAW, Continue.dev, etc.)
          |
    Claude Max API Proxy (this project)
          |
-   Claude Code CLI (subprocess)
+   Claude Code CLI (subprocess, with tools if agent detected)
          |
    OAuth Token (from Max subscription)
          |
@@ -42,20 +34,12 @@ Your App (OpenCLAW, Continue.dev, etc.)
    Response -> OpenAI format -> Your App
 ```
 
-## Features
-
-- **OpenAI-compatible API** — Works with any client that supports OpenAI's chat completions format
-- **Streaming support** — Real-time token streaming via Server-Sent Events
-- **Multiple models** — Claude Opus, Sonnet, and Haiku
-- **Flexible routing** — Both `/v1/chat/completions` and `/chat/completions` work
-- **Session management** — Maintains conversation context
-- **Zero configuration** — Uses existing Claude CLI authentication
-- **Secure by design** — Uses `spawn()` to prevent shell injection
+When an OpenCLAW agent is detected in the request, the proxy also passes `--tools` and `--add-dir` flags to the CLI subprocess, giving it read/write access to the agent's workspace directory on the host.
 
 ## Prerequisites
 
 1. **Claude Max subscription** ($200/month) — [Subscribe here](https://claude.ai)
-2. **Node.js** (v18+)
+2. **Node.js** (v20+)
 3. **Claude Code CLI** installed and authenticated:
    ```bash
    npm install -g @anthropic-ai/claude-code
@@ -85,10 +69,10 @@ npm run build
 
 ```bash
 # If installed globally
-claude-max-api    # or: node $(npm root -g)/claude-max-api-proxy/dist/server/standalone.js
+claude-max-api
 
 # If built from source
-node dist/server/standalone.js
+npm start
 ```
 
 The server runs at `http://localhost:3456` by default.
@@ -109,42 +93,113 @@ curl -X POST http://localhost:3456/chat/completions \
     "model": "claude-opus-4",
     "messages": [{"role": "user", "content": "Hello!"}]
   }'
-
-# Streaming
-curl -N -X POST http://localhost:3456/chat/completions \
-  -H "Content-Type: application/json" \
-  -d '{
-    "model": "claude-opus-4",
-    "messages": [{"role": "user", "content": "Hello!"}],
-    "stream": true
-  }'
 ```
 
-## API Endpoints
+## Configuration
 
-| Endpoint | Method | Description |
-|----------|--------|-------------|
-| `/health` | GET | Health check |
-| `/v1/models` | GET | List available models |
-| `/models` | GET | List available models (alias) |
-| `/v1/chat/completions` | POST | Chat completions (streaming & non-streaming) |
-| `/chat/completions` | POST | Chat completions (alias) |
+The proxy can be configured via a config file, environment variables, or auto-discovery.
 
-Both `/v1/...` and `/...` paths work identically.
+### Config file
 
-## Available Models
+Create `proxy.config.json` in the working directory, or `~/.config/claude-max-proxy/config.json`:
 
-| Model ID | Claude Model |
+```json
+{
+  "port": 3456,
+  "host": "0.0.0.0",
+  "workspace": {
+    "enabled": true,
+    "tools": "Read,Write,Edit,Bash,Glob,Grep",
+    "agents": [
+      {
+        "id": "piper",
+        "name": "Piper",
+        "workspace": "/var/lib/docker/volumes/openclaw-config/_data/workspace-piper",
+        "containerPath": "/home/node/.openclaw/workspace-piper"
+      }
+    ]
+  }
+}
+```
+
+See [`proxy.config.example.json`](proxy.config.example.json) for a full example.
+
+**Config fields:**
+
+| Field | Type | Default | Description |
+|-------|------|---------|-------------|
+| `port` | number | `3456` | Port to listen on |
+| `host` | string | `"127.0.0.1"` | Bind address (`"0.0.0.0"` for Docker access) |
+| `workspace.enabled` | boolean | `false` | Enable workspace tool access for agents |
+| `workspace.tools` | string | `"Read,Write,Edit,Bash,Glob,Grep"` | CLI tools to enable |
+| `workspace.agents` | array | `[]` | Agent-to-workspace mappings (see below) |
+
+**Agent fields:**
+
+| Field | Type | Required | Description |
+|-------|------|----------|-------------|
+| `id` | string | yes | Agent ID (e.g. `"piper"`) |
+| `name` | string | no | Display name used for detection in system messages |
+| `workspace` | string | yes | Host-accessible workspace path |
+| `containerPath` | string | no | Container-internal path (for prompt context) |
+
+### Environment variables
+
+These override the config file:
+
+| Variable | Description |
 |----------|-------------|
-| `claude-opus-4` | Claude Opus 4 |
-| `claude-sonnet-4` | Claude Sonnet 4 |
-| `claude-haiku-4` | Claude Haiku 4 |
+| `PROXY_PORT` | Port to listen on |
+| `PROXY_HOST` | Bind address |
+| `OPENCLAW_CONFIG_PATH` | Path to `openclaw.json` for auto-discovery |
+| `OPENCLAW_VOLUME_PATH` | Docker volume base path for workspace resolution |
+| `OPENCLAW_MAIN_WORKSPACE_PATH` | Host path for the "main" agent's workspace volume |
 
-Any unrecognized model ID defaults to Opus.
+### Auto-discovery from OpenCLAW
+
+If no agents are configured in the config file, the proxy automatically searches for `openclaw.json` in these locations:
+
+1. `/var/lib/docker/volumes/openclaw-config/_data/openclaw.json` (Docker)
+2. `~/.openclaw/openclaw.json` (native install)
+3. `./openclaw.json` (current directory)
+
+When found, it reads the agent list and translates container workspace paths to host-accessible Docker volume paths. No manual agent configuration needed.
+
+### Priority order
+
+1. Environment variables (highest)
+2. `proxy.config.json` in working directory
+3. `~/.config/claude-max-proxy/config.json`
+4. Auto-discovery from `openclaw.json`
+5. Built-in defaults (lowest)
+
+## Workspace Access for Agents
+
+When an OpenCLAW agent sends a request through the proxy, the proxy:
+
+1. **Detects the agent** — Scans the system message for identity patterns like `"You are Piper"` or `"name: Piper"`, and checks the `user` field
+2. **Resolves the workspace** — Maps the agent ID to a host-accessible directory
+3. **Enables CLI tools** — Spawns `claude --print` with `--tools`, `--add-dir`, and `--dangerously-skip-permissions`
+4. **Sets working directory** — The CLI subprocess runs inside the workspace directory
+
+The CLI handles file operations internally and returns the final text result. Requests without a recognized agent identity work as before (no tools, text-only).
+
+### How workspace paths work
+
+OpenCLAW agents have workspace directories inside their container at paths like `/home/node/.openclaw/workspace-piper/`. These same files are accessible on the Docker host via volume mounts:
+
+| Location | Path |
+|----------|------|
+| Inside container | `/home/node/.openclaw/workspace-piper/` |
+| On Docker host | `/var/lib/docker/volumes/openclaw-config/_data/workspace-piper/` |
+
+The proxy tells the Claude CLI about the host path, so it can read and write files that the container agent sees.
+
+For **native installs** (no Docker), workspace paths are already on the local filesystem (e.g. `~/.openclaw/workspace-piper/`) and no translation is needed.
 
 ## Configuration with OpenCLAW
 
-Three things must be configured in your `openclaw.json`. Missing any one of them will cause silent failures.
+Three things must be configured in your `openclaw.json`:
 
 ### 1. Add the provider (`models.providers`)
 
@@ -180,6 +235,8 @@ Three things must be configured in your `openclaw.json`. Missing any one of them
 }
 ```
 
+If OpenCLAW runs in Docker, use the Docker bridge IP: `"baseUrl": "http://172.17.0.1:3456"` and bind the proxy to `0.0.0.0`.
+
 ### 2. Set the default model (`agents.defaults.model`)
 
 ```json
@@ -196,7 +253,7 @@ Three things must be configured in your `openclaw.json`. Missing any one of them
 
 ### 3. Add to the models allowlist (`agents.defaults.models`)
 
-**This step is critical and easy to miss.** Without it, OpenCLAW silently rejects the model internally — the proxy never receives a request and the agent shows a `model_not_found` error.
+**This step is critical and easy to miss.** Without it, OpenCLAW silently rejects the model — the proxy never receives a request and agents show `model_not_found`.
 
 ```json
 {
@@ -211,75 +268,40 @@ Three things must be configured in your `openclaw.json`. Missing any one of them
 }
 ```
 
-> **Note:** Do NOT include `/v1` in the `baseUrl`. OpenCLAW appends `/chat/completions` directly to the base URL.
-
-## Configuration with Continue.dev
-
-```json
-{
-  "models": [{
-    "title": "Claude (Max)",
-    "provider": "openai",
-    "model": "claude-opus-4",
-    "apiBase": "http://localhost:3456/v1",
-    "apiKey": "not-needed"
-  }]
-}
-```
-
-## Configuration with Python (OpenAI SDK)
-
-```python
-from openai import OpenAI
-
-client = OpenAI(
-    base_url="http://localhost:3456/v1",
-    api_key="not-needed"
-)
-
-response = client.chat.completions.create(
-    model="claude-opus-4",
-    messages=[{"role": "user", "content": "Hello!"}]
-)
-```
+> **Note:** Do NOT include `/v1` in the `baseUrl`. OpenCLAW appends `/chat/completions` directly.
 
 ## Running as a Service
 
 ### Linux (systemd)
 
-Create `~/.config/systemd/user/claude-max-proxy.service`:
+Copy the example service file:
 
-```ini
-[Unit]
-Description=Claude Max API Proxy
-After=network.target
-
-[Service]
-ExecStart=/usr/bin/node %h/.npm-global/lib/node_modules/claude-max-api-proxy/dist/server/standalone.js
-Restart=on-failure
-RestartSec=5
-Environment=NODE_ENV=production
-Environment=PATH=%h/.npm-global/bin:%h/.local/bin:/usr/local/bin:/usr/bin:/bin
-
-[Install]
-WantedBy=default.target
+```bash
+cp examples/claude-max-proxy.service ~/.config/systemd/user/claude-max-proxy.service
 ```
 
-Then enable and start:
+Edit it to match your paths (see comments in the file), then:
 
 ```bash
 systemctl --user daemon-reload
 systemctl --user enable claude-max-proxy
 systemctl --user start claude-max-proxy
 
-# Check status
+# Check status / follow logs
 systemctl --user status claude-max-proxy
-
-# Follow logs
 journalctl --user -u claude-max-proxy -f
 ```
 
-> **Note:** Adjust the `ExecStart` path if you installed Node.js or the package in a different location. Run `npm root -g` to find your global modules path.
+### Docker wrapper script
+
+If OpenCLAW runs in a Docker container, use the wrapper script which binds to `0.0.0.0`:
+
+```bash
+cp examples/claude-max-proxy-wrapper.mjs ~/.local/bin/
+# Edit the PKG path in the script, then update your systemd service ExecStart
+```
+
+See [`examples/`](examples/) for the wrapper script and systemd unit file.
 
 ### macOS (launchd)
 
@@ -309,61 +331,88 @@ Create `~/Library/LaunchAgents/com.claude-max-proxy.plist`:
 </plist>
 ```
 
-Then load:
+Then: `launchctl load ~/Library/LaunchAgents/com.claude-max-proxy.plist`
 
-```bash
-launchctl load ~/Library/LaunchAgents/com.claude-max-proxy.plist
+## API Endpoints
+
+| Endpoint | Method | Description |
+|----------|--------|-------------|
+| `/health` | GET | Health check |
+| `/v1/models` or `/models` | GET | List available models |
+| `/v1/chat/completions` or `/chat/completions` | POST | Chat completions (streaming & non-streaming) |
+
+## Available Models
+
+| Model ID | Claude Model |
+|----------|-------------|
+| `claude-opus-4` | Claude Opus 4 |
+| `claude-sonnet-4` | Claude Sonnet 4 |
+| `claude-haiku-4` | Claude Haiku 4 |
+
+Any unrecognized model ID defaults to Opus.
+
+## Configuration with Other Clients
+
+### Continue.dev
+
+```json
+{
+  "models": [{
+    "title": "Claude (Max)",
+    "provider": "openai",
+    "model": "claude-opus-4",
+    "apiBase": "http://localhost:3456/v1",
+    "apiKey": "not-needed"
+  }]
+}
 ```
 
-> **Note:** Adjust paths to match your Node.js installation. Run `which node` and `npm root -g` to find the correct paths.
+### Python (OpenAI SDK)
+
+```python
+from openai import OpenAI
+
+client = OpenAI(
+    base_url="http://localhost:3456/v1",
+    api_key="not-needed"
+)
+
+response = client.chat.completions.create(
+    model="claude-opus-4",
+    messages=[{"role": "user", "content": "Hello!"}]
+)
+```
 
 ## Troubleshooting
 
 ### 404 / model_not_found
 
-- Make sure you installed from **this fork**, not the upstream. The upstream only registers `/v1/chat/completions`.
-- Check that `agents.defaults.models` in `openclaw.json` includes `"claude-max/claude-opus-4": {}`. Without this, OpenCLAW rejects the model internally before ever contacting the proxy.
+- Install from **this fork**, not the upstream
+- Check `agents.defaults.models` in `openclaw.json` includes your model
 
-### [object Object] in messages
+### Agents can't access workspace files
 
-You're running the upstream version with a stale `dist/` build. Reinstall from this fork:
+- Check that workspace auto-discovery found your agents: look for `[config] Auto-discovered N agent(s)` in the proxy logs
+- If auto-discovery doesn't work, create a `proxy.config.json` with explicit agent mappings
+- Verify the Docker volume is readable: `ls /var/lib/docker/volumes/openclaw-config/_data/`
+- For native installs, set `OPENCLAW_VOLUME_PATH` to `~/.openclaw`
 
-```bash
-npm uninstall -g claude-max-api-proxy
-npm install -g github:HalfzwareLinda/claude-max-api-proxy
-```
+### Agent hangs or times out
 
-### Agent doesn't respond (hangs forever)
-
-1. Check the proxy is running: `curl http://localhost:3456/health`
-2. Check Claude CLI auth: `claude auth status`
-3. Test the proxy directly:
-   ```bash
-   curl -X POST http://localhost:3456/chat/completions \
-     -H "Content-Type: application/json" \
-     -d '{"model":"claude-opus-4","messages":[{"role":"user","content":"hi"}],"max_tokens":10}'
-   ```
+The default subprocess timeout is 15 minutes. Agentic tasks with tool use may take longer than text-only responses.
 
 ### Docker / container setup
 
-If OpenCLAW runs in a Docker container and the proxy runs on the host:
-
-1. Bind the proxy to `0.0.0.0` instead of `127.0.0.1` (create a wrapper script or set `HOST=0.0.0.0`)
-2. Use the Docker bridge gateway IP as `baseUrl`: `http://172.17.0.1:3456`
-
-### "Claude CLI not found"
-
-Install and authenticate the CLI:
-
-```bash
-npm install -g @anthropic-ai/claude-code
-claude auth login
-```
+1. Bind the proxy to `0.0.0.0` (use the wrapper script or set `"host": "0.0.0.0"` in config)
+2. Use the Docker bridge gateway IP as `baseUrl` in openclaw.json: `http://172.17.0.1:3456`
 
 ## Architecture
 
 ```
 src/
+├── config/
+│   ├── config.ts          # Configuration loading (file, env, auto-discovery)
+│   └── workspaces.ts      # Agent identity detection & workspace resolution
 ├── types/
 │   ├── claude-cli.ts      # Claude CLI JSON output types
 │   └── openai.ts          # OpenAI API types
@@ -380,13 +429,6 @@ src/
 │   └── standalone.ts      # Entry point
 └── index.ts               # Package exports
 ```
-
-## Security
-
-- Uses Node.js `spawn()` instead of shell execution to prevent injection attacks
-- No API keys stored or transmitted by this proxy
-- All authentication handled by Claude CLI's secure keychain storage
-- Prompts passed as CLI arguments, not through shell interpretation
 
 ## License
 

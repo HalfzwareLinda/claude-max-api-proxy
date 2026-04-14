@@ -62,6 +62,8 @@
   "files": [
     "dist",
     "docs",
+    "examples",
+    "proxy.config.example.json",
     "README.md",
     "CONTRIBUTING.md"
   ]
